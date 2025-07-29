@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Copyright (c) 2017 The Zcash developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -13,9 +13,12 @@
 #include <secp256k1_schnorrsig.h>
 #include <span.h>
 #include <uint256.h>
+#include <util/strencodings.h>
 
 #include <algorithm>
 #include <cassert>
+
+using namespace util::hex_literals;
 
 namespace {
 
@@ -181,11 +184,18 @@ int ecdsa_signature_parse_der_lax(secp256k1_ecdsa_signature* sig, const unsigned
     return 1;
 }
 
-XOnlyPubKey::XOnlyPubKey(Span<const unsigned char> bytes)
-{
-    assert(bytes.size() == 32);
-    std::copy(bytes.begin(), bytes.end(), m_keydata.begin());
-}
+/** Nothing Up My Sleeve (NUMS) point
+ *
+ *  NUMS_H is a point with an unknown discrete logarithm, constructed by taking the sha256 of 'g'
+ *  (uncompressed encoding), which happens to be a point on the curve.
+ *
+ *  For an example script for calculating H, refer to the unit tests in
+ *  ./test/functional/test_framework/crypto/secp256k1.py
+ */
+constexpr XOnlyPubKey XOnlyPubKey::NUMS_H{
+    // Use immediate lambda to work around GCC-14 bug https://gcc.gnu.org/bugzilla/show_bug.cgi?id=117966
+    []() consteval { return XOnlyPubKey{"50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"_hex_u8}; }(),
+};
 
 std::vector<CKeyID> XOnlyPubKey::GetKeyIDs() const
 {
@@ -204,13 +214,20 @@ std::vector<CKeyID> XOnlyPubKey::GetKeyIDs() const
     return out;
 }
 
+CPubKey XOnlyPubKey::GetEvenCorrespondingCPubKey() const
+{
+    unsigned char full_key[CPubKey::COMPRESSED_SIZE] = {0x02};
+    std::copy(begin(), end(), full_key + 1);
+    return CPubKey{full_key};
+}
+
 bool XOnlyPubKey::IsFullyValid() const
 {
     secp256k1_xonly_pubkey pubkey;
     return secp256k1_xonly_pubkey_parse(secp256k1_context_static, &pubkey, m_keydata.data());
 }
 
-bool XOnlyPubKey::VerifySchnorr(const uint256& msg, Span<const unsigned char> sigbytes) const
+bool XOnlyPubKey::VerifySchnorr(const uint256& msg, std::span<const unsigned char> sigbytes) const
 {
     assert(sigbytes.size() == 64);
     secp256k1_xonly_pubkey pubkey;
@@ -334,6 +351,12 @@ bool CPubKey::Derive(CPubKey& pubkeyChild, ChainCode &ccChild, unsigned int nChi
     secp256k1_ec_pubkey_serialize(secp256k1_context_static, pub, &publen, &pubkey, SECP256K1_EC_COMPRESSED);
     pubkeyChild.Set(pub, pub + publen);
     return true;
+}
+
+EllSwiftPubKey::EllSwiftPubKey(std::span<const std::byte> ellswift) noexcept
+{
+    assert(ellswift.size() == SIZE);
+    std::copy(ellswift.begin(), ellswift.end(), m_pubkey.begin());
 }
 
 CPubKey EllSwiftPubKey::Decode() const
